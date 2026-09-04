@@ -1,0 +1,66 @@
+import yfinance as yf
+import pandas as pd
+import numpy as np
+
+def _find_row(df, aliases):
+    """Try a list of possible names, return the first match in df.index."""
+    for a in aliases:
+        if a in df.index:
+            return df.loc[a].T
+    return None
+
+def forecast_capex_from_ticker():
+    ticker = input("Enter stock ticker (e.g. CAT, MMM, GE): ").strip().upper()
+    stock = yf.Ticker(ticker)
+
+    # Grab financials (last 3 periods)
+    cf = stock.cashflow.iloc[:, :3]
+    is_ = stock.financials.iloc[:, :3]
+
+    revenue_aliases = ["Total Revenue", "Revenues", "Operating Revenue", "Net Sales", "Revenue"]
+    depreciation_aliases = ["Depreciation", "Depreciation And Amortization", "Depreciation Amortization Depletion", "Reconciled Depreciation"]
+    capex_aliases = ["Capital Expenditures", "Purchase Of Property Plant And Equipment", "Capital Expenditure", "Capital Expenditure Reported", "Net PPE Purchase And Sale", "Purchase Of PPE"]
+
+    revenue = _find_row(is_, revenue_aliases)
+    depreciation = _find_row(cf, depreciation_aliases)
+    capex = _find_row(cf, capex_aliases)
+    if capex is not None:
+        capex = capex.abs()
+
+    if revenue is None or depreciation is None or capex is None:
+        print(f" Could not find all data for {ticker}.")
+        return
+
+    hist = pd.DataFrame({"revenue": revenue, "depreciation": depreciation, "capex": capex}).dropna()
+    if hist.empty:
+        print(f"No usable historical data for {ticker}")
+        return
+
+    # CAGR forecast
+    if len(hist) > 1:
+        cagr = (hist["revenue"].iloc[-1] / hist["revenue"].iloc[0]) ** (1 / (len(hist) - 1)) - 1
+    else:
+        cagr = 0
+
+    last_rev, last_dep = hist["revenue"].iloc[-1], hist["depreciation"].iloc[-1]
+
+    forecast = pd.DataFrame(index=range(1, 6))
+    forecast["revenue_frcst"] = [last_rev * (1 + cagr) ** i for i in forecast.index]
+    forecast["depreciation_frcst"] = last_dep
+    forecast["capex_frcst"] = 0.8 * last_dep + 0.6 * forecast["revenue_frcst"].diff().clip(lower=0).fillna(0)
+
+    print(f"\n CapEx Forecast for {ticker}:\n", forecast.round(2))
+
+    # --- CapEx Efficiency Score with sigmoid scaling ---
+    avg_capex = forecast["capex_frcst"].mean()
+    avg_revenue = forecast["revenue_frcst"].mean()
+    capex_intensity = avg_capex / avg_revenue
+
+    # Industry benchmark
+    target_intensity = 0.07
+    # Sigmoid scaling
+    score = 100 / (1 + np.exp(10 * (capex_intensity - target_intensity)))  # steepness factor 10
+
+    print(f"\n CapEx Efficiency Score (0-100) for {ticker}: {round(score, 2)}")
+
+forecast_capex_from_ticker()
